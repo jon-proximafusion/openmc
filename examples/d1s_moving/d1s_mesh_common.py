@@ -10,6 +10,8 @@ from openmc.deplete import d1s
 
 EMITTER_RADIUS_CM = 6.0
 SHIELD_X_CM = (32.0, 36.0)
+IRON_Y_CM = (-18.0, -12.0)
+IRON_Z_CM = (-8.0, 8.0)
 MESH_LOWER_LEFT_CM = (-30.0, -24.0, -2.0)
 MESH_UPPER_RIGHT_CM = (60.0, 24.0, 2.0)
 TALLY_NAME = 'decay photon mesh flux'
@@ -40,8 +42,13 @@ def parse_arguments(description, default_output):
     return args
 
 
-def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None):
-    """Place nickel independently of any explicitly supplied neutron source."""
+def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None,
+                     iron_slab=False):
+    """Place nickel independently of any explicitly supplied neutron source.
+
+    An emitter_x_cm of None removes the nickel from both the geometry and the
+    source map. With iron_slab, a fixed activating iron slab is added.
+    """
     nickel = openmc.Material(name='nickel emitter')
     nickel.add_element('Ni', 1.0)
     nickel.set_density('g/cm3', 8.9)
@@ -59,14 +66,40 @@ def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None):
     zmin = openmc.ZPlane(z0=-20.0, boundary_type='vacuum')
     zmax = openmc.ZPlane(z0=20.0, boundary_type='vacuum')
     room = +xmin & -xmax & +ymin & -ymax & +zmin & -zmax
-    sphere = openmc.Sphere(x0=emitter_x_cm, r=EMITTER_RADIUS_CM)
     shield_left = openmc.XPlane(x0=SHIELD_X_CM[0])
     shield_right = openmc.XPlane(x0=SHIELD_X_CM[1])
     shield_region = +shield_left & -shield_right
-    emitter = openmc.Cell(fill=nickel, region=-sphere)
+    void_region = room & ~shield_region
+    cells = []
+    components = {}
+    if emitter_x_cm is None:
+        # Explicit None keeps the decaying history but suppresses emission.
+        components['emitter'] = None
+    else:
+        sphere = openmc.Sphere(x0=emitter_x_cm, r=EMITTER_RADIUS_CM)
+        emitter = openmc.Cell(fill=nickel, region=-sphere)
+        cells.append(emitter)
+        components['emitter'] = d1s.Cells([emitter])
+        void_region &= +sphere
+    if iron_slab:
+        # Fixed full-length slab along the bottom, 16 cm deep in z. It is
+        # activated by scattered neutrons and attenuates downward photons.
+        iron = openmc.Material(name='stationary iron slab')
+        iron.add_element('Fe', 1.0)
+        iron.set_density('g/cm3', 7.87)
+        iron_bottom = openmc.YPlane(y0=IRON_Y_CM[0])
+        iron_top = openmc.YPlane(y0=IRON_Y_CM[1])
+        iron_front = openmc.ZPlane(z0=IRON_Z_CM[0])
+        iron_back = openmc.ZPlane(z0=IRON_Z_CM[1])
+        iron_region = +iron_bottom & -iron_top & +iron_front & -iron_back
+        slab = openmc.Cell(fill=iron, region=room & iron_region)
+        cells.append(slab)
+        components['iron slab'] = d1s.Cells([slab])
+        shield_region &= ~iron_region
+        void_region &= ~iron_region
     shield = openmc.Cell(fill=hydrogen, region=room & shield_region)
-    void = openmc.Cell(region=room & +sphere & ~shield_region)
-    model = openmc.Model(geometry=openmc.Geometry([emitter, shield, void]))
+    void = openmc.Cell(region=void_region)
+    model = openmc.Model(geometry=openmc.Geometry([*cells, shield, void]))
     model.settings.run_mode = 'fixed source'
     model.settings.batches = args.batches
     model.settings.particles = args.particles
@@ -97,11 +130,13 @@ def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None):
         neutron_flux.scores = ['flux']
         model.tallies.append(neutron_flux)
 
-    placement = np.eye(4)
-    placement[0, 3] = emitter_x_cm
-    return d1s.Configuration(
-        model, components={'emitter': d1s.Cells([emitter])},
-        transforms={'emitter': placement})
+    transforms = {}
+    if emitter_x_cm is not None:
+        placement = np.eye(4)
+        placement[0, 3] = emitter_x_cm
+        transforms['emitter'] = placement
+    return d1s.Configuration(model, components=components,
+                             transforms=transforms)
 
 
 def mesh_flux(tally, value='mean'):
@@ -113,7 +148,7 @@ def mesh_flux(tally, value='mean'):
 
 
 def export_animation(results, output_dir, emitter_positions, neutron_positions,
-                     description, fps, irradiation_end_s):
+                     description, fps, irradiation_end_s, iron_slab=False):
     """Export physical mesh means/errors and a fixed-scale cooling GIF."""
     observations = list(results.observations.values())
     means, errors = [], []
@@ -126,7 +161,12 @@ def export_animation(results, output_dir, emitter_positions, neutron_positions,
     means, errors = np.asarray(means), np.asarray(errors)
     cooling_times = np.array([o.global_time - irradiation_end_s
                              for o in observations])
-    positions = np.array([emitter_positions[o.step] for o in observations])
+    # NaN marks observations where the nickel has been removed.
+    positions = np.array([np.nan if emitter_positions[o.step] is None
+                          else emitter_positions[o.step]
+                          for o in observations], dtype=float)
+    placements = ['nickel removed' if np.isnan(x) else f'x = {x:g} cm'
+                  for x in positions]
     output_dir = Path(output_dir)
     np.savez_compressed(
         output_dir / 'mesh_flux.npz', photon_flux=means,
@@ -142,12 +182,12 @@ def export_animation(results, output_dir, emitter_positions, neutron_positions,
 
     titles = [
         f'{description}\n{cooling_times[index] / 60:.1f} min after shutdown; '
-        f'x = {positions[index]:g} cm; '
+        f'{placements[index]}; '
         f'Qγ = {observation.source_rate:.3e} photons/s'
         for index, observation in enumerate(observations)]
     draw_animation(means, output_dir / 'photon_flux.gif', positions,
                    neutron_positions, titles, 'Photon flux [photons/cm²/s]',
-                   fps)
+                   fps, iron_slab=iron_slab)
 
     print('step,minutes_after_shutdown,emitter_x_cm,'
           'photons_per_second,max_mesh_flux')
@@ -159,7 +199,8 @@ def export_animation(results, output_dir, emitter_positions, neutron_positions,
     print(f'Mesh arrays: {output_dir / "mesh_flux.npz"}')
 
 
-def export_neutron_animation(simulation, production, output_dir, fps):
+def export_neutron_animation(simulation, production, output_dir, fps,
+                             iron_slab=False):
     """Plot the neutron flux field for each static irradiation interval."""
     means, errors, positions, sources, titles = [], [], [], [], []
     times, elapsed = [], 0.0
@@ -194,19 +235,20 @@ def export_neutron_animation(simulation, production, output_dir, fps):
         flux_units='neutrons/cm2/s')
     draw_animation(np.asarray(means), output_dir / 'neutron_flux.gif',
                    positions, sources, titles, 'Neutron flux [neutrons/cm²/s]',
-                   fps, neutron_active=True)
+                   fps, neutron_active=True, iron_slab=iron_slab)
     print(f'Neutron animation: {output_dir / "neutron_flux.gif"}')
 
 
 def draw_animation(means, filename, positions, neutron_positions, titles,
-                   colorbar_label, fps, neutron_active=False):
+                   colorbar_label, fps, neutron_active=False,
+                   iron_slab=False):
     """Render (frame, x, y) data with fixed axes and color normalization."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, PillowWriter
     from matplotlib.colors import LogNorm
-    from matplotlib.patches import Circle
+    from matplotlib.patches import Circle, Rectangle
 
     maximum = float(means.max())
     if maximum <= 0.0:
@@ -225,7 +267,15 @@ def draw_animation(means, filename, positions, neutron_positions, titles,
     fig.colorbar(image, ax=ax, label=colorbar_label)
     ax.axvspan(*SHIELD_X_CM, color='cyan', alpha=0.2,
                label='stationary H1 shield')
-    emitter = Circle((positions[0], 0.0), EMITTER_RADIUS_CM,
+    if iron_slab:
+        # Outline only, so the slab's own emission and shadow stay visible.
+        ax.add_patch(Rectangle(
+            (MESH_LOWER_LEFT_CM[0], IRON_Y_CM[0]),
+            MESH_UPPER_RIGHT_CM[0] - MESH_LOWER_LEFT_CM[0],
+            IRON_Y_CM[1] - IRON_Y_CM[0], fill=False, edgecolor='silver',
+            linestyle='--', linewidth=1.5, label='stationary Fe slab'))
+    positions = np.asarray(positions, dtype=float)
+    emitter = Circle((0.0, 0.0), EMITTER_RADIUS_CM,
                      fill=False, edgecolor='white', linewidth=1.5,
                      label='nickel emitter')
     ax.add_patch(emitter)
@@ -242,7 +292,11 @@ def draw_animation(means, filename, positions, neutron_positions, titles,
 
     def update(index):
         image.set_data(np.ma.masked_less_equal(means[index].T, 0.0))
-        emitter.center = (positions[index], 0.0)
+        # A NaN position means the nickel has been removed from the model.
+        present = bool(np.isfinite(positions[index]))
+        emitter.set_visible(present)
+        if present:
+            emitter.center = (positions[index], 0.0)
         if neutron_active:
             source_markers.set_offsets(neutron_positions[index:index + 1, :2])
         ax.set_title(titles[index])
@@ -259,7 +313,7 @@ def draw_animation(means, filename, positions, neutron_positions, titles,
 
 
 def run_example(simulation, args, emitter_positions, neutron_positions,
-                description):
+                description, iron_slab=False):
     """Run transport before exporting its cooling mesh snapshots."""
     results = simulation.run(
         output_dir=args.output,
@@ -268,8 +322,8 @@ def run_example(simulation, args, emitter_positions, neutron_positions,
     irradiation_end_s = sum(step.duration for step in simulation.steps
                             if isinstance(step, d1s.Irradiation))
     export_neutron_animation(simulation, results.production, args.output,
-                             args.fps)
+                             args.fps, iron_slab)
     export_animation(
         results, args.output, emitter_positions, neutron_positions,
-        description, args.fps, irradiation_end_s)
+        description, args.fps, irradiation_end_s, iron_slab)
     return results

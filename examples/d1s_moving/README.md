@@ -1,6 +1,6 @@
 # Moving-source and moving-volume D1S examples
 
-Both examples use a **stationary `openmc.RegularMesh`**, not an unstructured
+All three examples use a **stationary `openmc.RegularMesh`**, not an unstructured
 mesh. They create a neutron-flux GIF for the irradiation intervals and a
 decay-photon-flux GIF for cooling observations.
 
@@ -11,7 +11,9 @@ decay-photon-flux GIF for cooling observations.
 - Set `OPENMC_CHAIN_FILE` to a compatible reaction/decay chain containing
   nickel activation products, or pass `--chain-file`. The small nickel test
   chain in this repository can be used for demonstration, not as a complete
-  production activation library.
+  production activation library. Example 3 also activates iron, so it needs
+  a chain with iron activation products (for example a full ENDF/B-VIII.1
+  chain). The nickel test chain has none.
 - NumPy, Matplotlib, and Pillow are used for post-processing. Pillow is only
   needed for GIF export. No ffmpeg or VTK installation is required.
 - Leave any caller `openmc.lib` session uninitialized. Use new or empty output
@@ -22,6 +24,8 @@ Run either script from any directory, with the compiled executable on PATH:
 ```sh
 python moving_neutron_source.py --output moving-source-results
 python moving_activated_volume.py --output moving-volume-results
+python moving_then_removed_volume.py --output removed-volume-results \
+    --chain-file chain-endf-b8.1.xml
 ```
 
 If running from the repository root, prepend `examples/d1s_moving/` to each
@@ -79,6 +83,36 @@ to the current nickel placement. The actual nickel geometry moves too,
 while attenuation in the stationary shielding is recalculated by photon
 transport. Cooling models have no assigned neutron source.
 
+## Example 3: moving then removed nickel above a fixed iron slab
+
+[moving_then_removed_volume.py](moving_then_removed_volume.py) uses the
+Example 2 irradiation schedule with a stationary iron slab added along the
+bottom of the room. The slab is 6 cm thick (y from -18 to -12 cm), runs the
+full length of the room in x and spans z from -8 to 8 cm. It sits in every
+irradiation and cooling model. It is activated by neutrons scattered out of
+the beam, mostly through Fe56(n,p)Mn56, but less strongly than the nickel in
+the beam. The stable component key `iron slab` gives it its own production
+history. It never moves, so it needs no transform.
+
+During cooling the nickel moves through x=24, 16 and 8 cm in ten-minute
+intervals. It is then removed: the final 40-minute cooling model has no
+nickel cell, and its source map holds `'emitter': None`. That suppresses the
+nickel emission while keeping its history. The last eight frames therefore
+show only the decaying iron slab.
+
+| Cooling (min after shutdown) | Nickel | Emitting components |
+| --- | --- | --- |
+| 0 to 10 | x = 24 cm | nickel, iron slab |
+| 10 to 20 | x = 16 cm | nickel, iron slab |
+| 20 to 30 | x = 8 cm | nickel, iron slab |
+| 30 to 70 | removed | iron slab |
+
+The photon GIF compares the two shields. Photons from the nickel heading
+down cross 6 cm of iron and are strongly attenuated below the slab. The 4 cm
+H1 slab (0.07 g/cm³) has very little photon attenuation. The flux to its
+right just continues the fall with distance from the nickel. The iron slab is
+drawn as a dashed outline so its own emission stays visible.
+
 ## Mesh tallies, physical units, and animation
 
 The shared helper, [d1s_mesh_common.py](d1s_mesh_common.py), defines:
@@ -107,7 +141,8 @@ divided by voxel volume to obtain neutrons/cm²/s.
 
 Every frame in a GIF uses the same logarithmic color scale, so a changing
 intensity is not hidden by automatic rescaling. The white outline is the
-nickel volume, cyan marks the stationary H1 slab, and green crosses identify
+nickel volume, cyan marks the stationary H1 slab, the dashed outline marks
+the iron slab in Example 3, and green crosses identify
 neutron-source sites. In cooling frames, the crosses are explicitly marked
 as off. Matplotlib's `PillowWriter` exports GIFs without an external video
 encoder. Display playback speed is illustrative; frame titles give the
@@ -122,7 +157,7 @@ Each output directory contains:
   deviations, source positions, and irradiation interval times.
 - `mesh_flux.npz`: physical photon means, conditional standard deviations,
   source rates, positions, and local/global cooling times. Flux arrays have
-  shape `(frame, nx, ny)`.
+  shape `(frame, nx, ny)`. A NaN nickel position means it was removed.
 - The D1S production banks, per-observation replay banks, and raw statepoints.
 
 The scripts print a CSV-style summary of each cooling observation, including

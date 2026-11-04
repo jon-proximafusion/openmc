@@ -20,7 +20,8 @@ def examples(monkeypatch):
     return SimpleNamespace(
         common=importlib.import_module('d1s_mesh_common'),
         moving_source=importlib.import_module('moving_neutron_source'),
-        moving_volume=importlib.import_module('moving_activated_volume'))
+        moving_volume=importlib.import_module('moving_activated_volume'),
+        removed_volume=importlib.import_module('moving_then_removed_volume'))
 
 
 @pytest.fixture
@@ -88,3 +89,39 @@ def test_example_schedules(examples, args, scenario):
                 == configuration.transforms['emitter'][0, 3])
     assert all(len(step.configuration.model.settings.source) == 0
                for step in cooling)
+
+def test_removed_volume_schedule(examples, args):
+    module = examples.removed_volume
+    simulation, positions = module.make_simulation(args)
+    simulation.validate()
+    irradiations = [step for step in simulation.steps
+                    if isinstance(step, d1s.Irradiation)]
+    cooling = [step for step in simulation.steps
+               if isinstance(step, d1s.Cooling)]
+    assert len(irradiations) == 3
+    assert tuple(positions.values()) == module.COOLING_POSITIONS_CM
+    assert sum(len(step.sample_times) for step in cooling) == 14
+    for step in simulation.steps:
+        configuration = step.configuration
+        assert list(configuration.components) == ['emitter', 'iron slab']
+        slab = configuration.components['iron slab'].cells[0]
+        assert slab.fill.name == 'stationary iron slab'
+        assert 'iron slab' not in configuration.transforms
+    # The last cooling model has neither nickel geometry nor a nickel source.
+    removed = cooling[-1].configuration
+    assert removed.components['emitter'] is None
+    assert 'emitter' not in removed.transforms
+    materials = {cell.fill.name for cell in
+                 removed.model.geometry.get_all_material_cells().values()}
+    assert 'nickel emitter' not in materials
+    assert all(step.configuration.components['emitter'] is not None
+               for step in [*irradiations, *cooling[:-1]])
+
+
+def test_removed_emitter_hidden_in_animation(examples, tmp_path):
+    means = np.ones((2, 3, 2))
+    examples.common.draw_animation(
+        means, tmp_path / 'flux.gif', [8.0, np.nan], [(-15., 0., 0.)],
+        ['present', 'removed'], 'flux', fps=1, iron_slab=True)
+    assert (tmp_path / 'flux.gif').exists()
+    assert (tmp_path / 'flux_last.png').exists()
