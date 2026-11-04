@@ -26,6 +26,8 @@ python moving_neutron_source.py --output moving-source-results
 python moving_activated_volume.py --output moving-volume-results
 python moving_then_removed_volume.py --output removed-volume-results \
     --chain-file chain-endf-b8.1.xml
+python moving_then_removed_volume_cad.py --output removed-volume-cad-results \
+    --chain-file chain-endf-b8.1.xml
 ```
 
 If running from the repository root, prepend `examples/d1s_moving/` to each
@@ -113,6 +115,31 @@ H1 slab (0.07 g/cm³) has very little photon attenuation. The flux to its
 right just continues the fall with distance from the nickel. The iron slab is
 drawn as a dashed outline so its own emission stays visible.
 
+### Example 3 in CAD (DAGMC)
+
+[moving_then_removed_volume_cad.py](moving_then_removed_volume_cad.py) runs
+the same schedule with CAD geometry instead of CSG. It needs a
+DAGMC-enabled OpenMC build (both the executable and the Python shared
+library) plus `pip install cad_to_dagmc cad-to-dagmc-mesher`.
+
+The iron slab, H1 slab and nickel sphere are built as CadQuery solids with
+the same dimensions as the CSG version. The H1 slab has the iron cut out of
+it where they meet. `cad_to_dagmc` exports one DAGMC file per distinct
+nickel placement, with `meshing_backend='cad-to-dagmc-mesher'`. Six are
+needed: three irradiation positions, two new cooling positions and the
+removed state, which only has the iron and H1. They are written to
+`--cad-dir` (default `d1s-moving-then-removed-volume-cad-h5m`), and existing
+files there are reused.
+
+Each model places the DAGMC universe in a CSG box with vacuum boundaries,
+padded 1 cm beyond the room so no CAD surface lies on the boundary. The
+padding is void. The universe uses `auto_geom_ids=True`. Components are
+selected with `d1s.DAGMCVolumes` using the raw H5M volume IDs, which follow
+the order the solids are added: iron is 1, H1 is 2 and nickel is 3. The
+removed state again maps `'emitter'` to None. The CSG and CAD examples use
+the same schedule function, mesh and plotting, so their animations can be
+compared directly.
+
 ## Mesh tallies, physical units, and animation
 
 The shared helper, [d1s_mesh_common.py](d1s_mesh_common.py), defines:
@@ -142,9 +169,9 @@ divided by voxel volume to obtain neutrons/cm²/s.
 Every frame in a GIF uses the same logarithmic color scale, so a changing
 intensity is not hidden by automatic rescaling. The white outline is the
 nickel volume, cyan marks the stationary H1 slab, the dashed outline marks
-the iron slab in Example 3, and green crosses identify
-neutron-source sites. In cooling frames, the crosses are explicitly marked
-as off. Matplotlib's `PillowWriter` exports GIFs without an external video
+the iron slab in Example 3, and green arrows identify neutron-source
+sites and the +x beam direction. In cooling frames, the arrows are
+explicitly marked as off. Matplotlib's `PillowWriter` exports GIFs without an external video
 encoder. Display playback speed is illustrative; frame titles give the
 physical schedule time.
 

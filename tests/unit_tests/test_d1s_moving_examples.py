@@ -1,5 +1,6 @@
 """Check example schedules and RegularMesh plotting without transport."""
 
+import functools
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -125,3 +126,26 @@ def test_removed_emitter_hidden_in_animation(examples, tmp_path):
         ['present', 'removed'], 'flux', fps=1, iron_slab=True)
     assert (tmp_path / 'flux.gif').exists()
     assert (tmp_path / 'flux_last.png').exists()
+
+
+def test_removed_volume_cad_schedule(examples, args, tmp_path):
+    pytest.importorskip('cad_to_dagmc')
+    pytest.importorskip('cad_to_dagmc_mesher')
+    cad = importlib.import_module('moving_then_removed_volume_cad')
+    configuration = functools.partial(cad.cad_configuration_at,
+                                      cad_dir=tmp_path)
+    simulation, positions = examples.removed_volume.make_simulation(
+        args, configuration)
+    simulation.validate()
+    assert tuple(positions.values()) == \
+        examples.removed_volume.COOLING_POSITIONS_CM
+    for step in simulation.steps:
+        components = step.configuration.components
+        assert list(components) == ['emitter', 'iron slab']
+        assert components['iron slab'].volume_ids == (cad.IRON_VOLUME_ID,)
+        emitter = components['emitter']
+        if emitter is not None:
+            assert emitter.volume_ids == (cad.NICKEL_VOLUME_ID,)
+    assert simulation.steps[-1].configuration.components['emitter'] is None
+    # One DAGMC file per distinct nickel placement, plus the removed state.
+    assert len(list(tmp_path.glob('*.h5m'))) == 6

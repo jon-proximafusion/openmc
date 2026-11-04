@@ -9,16 +9,21 @@ from openmc.deplete import d1s
 
 
 EMITTER_RADIUS_CM = 6.0
+ROOM_LOWER_LEFT_CM = (-50.0, -35.0, -20.0)
+ROOM_UPPER_RIGHT_CM = (70.0, 35.0, 20.0)
 SHIELD_X_CM = (32.0, 36.0)
 IRON_Y_CM = (-18.0, -12.0)
 IRON_Z_CM = (-8.0, 8.0)
+# Every example uses a monodirectional beam along this direction.
+NEUTRON_DIRECTION = (1.0, 0.0, 0.0)
+SOURCE_ARROW_CM = 8.0
 MESH_LOWER_LEFT_CM = (-30.0, -24.0, -2.0)
 MESH_UPPER_RIGHT_CM = (60.0, 24.0, 2.0)
 TALLY_NAME = 'decay photon mesh flux'
 NEUTRON_TALLY_NAME = 'irradiation neutron mesh flux'
 
 
-def parse_arguments(description, default_output):
+def parse_arguments(description, default_output, cad=False):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--output', type=Path, default=Path(default_output),
                         help='New or empty output directory')
@@ -32,6 +37,10 @@ def parse_arguments(description, default_output):
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--openmc-exec', default='openmc')
     parser.add_argument('--fps', type=int, default=3)
+    if cad:
+        parser.add_argument(
+            '--cad-dir', type=Path, default=Path(f'{default_output}-h5m'),
+            help='Directory for DAGMC files, reused if already present')
     args = parser.parse_args()
     if args.chain_file is None:
         parser.error('Set --chain-file or OPENMC_CHAIN_FILE')
@@ -42,6 +51,39 @@ def parse_arguments(description, default_output):
     return args
 
 
+def make_materials(names):
+    """Return the nickel, hydrogen and iron materials with given names."""
+    nickel = openmc.Material(name=names[0])
+    nickel.add_element('Ni', 1.0)
+    nickel.set_density('g/cm3', 8.9)
+
+    # Pure H1 is an illustrative static moderator/shield. Its neutron-capture
+    # product is stable, so this region needs no decay-photon source identity.
+    hydrogen = openmc.Material(name=names[1])
+    hydrogen.add_nuclide('H1', 1.0)
+    hydrogen.set_density('g/cm3', 0.07)
+
+    iron = openmc.Material(name=names[2])
+    iron.add_element('Fe', 1.0)
+    iron.set_density('g/cm3', 7.87)
+    return nickel, hydrogen, iron
+
+
+def room_region(padding_cm=0.0):
+    """Vacuum-bounded box around the room, optionally padded outwards."""
+    planes = [
+        openmc.XPlane(x0=ROOM_LOWER_LEFT_CM[0] - padding_cm),
+        openmc.XPlane(x0=ROOM_UPPER_RIGHT_CM[0] + padding_cm),
+        openmc.YPlane(y0=ROOM_LOWER_LEFT_CM[1] - padding_cm),
+        openmc.YPlane(y0=ROOM_UPPER_RIGHT_CM[1] + padding_cm),
+        openmc.ZPlane(z0=ROOM_LOWER_LEFT_CM[2] - padding_cm),
+        openmc.ZPlane(z0=ROOM_UPPER_RIGHT_CM[2] + padding_cm)]
+    for plane in planes:
+        plane.boundary_type = 'vacuum'
+    xmin, xmax, ymin, ymax, zmin, zmax = planes
+    return +xmin & -xmax & +ymin & -ymax & +zmin & -zmax
+
+
 def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None,
                      iron_slab=False):
     """Place nickel independently of any explicitly supplied neutron source.
@@ -49,23 +91,10 @@ def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None,
     An emitter_x_cm of None removes the nickel from both the geometry and the
     source map. With iron_slab, a fixed activating iron slab is added.
     """
-    nickel = openmc.Material(name='nickel emitter')
-    nickel.add_element('Ni', 1.0)
-    nickel.set_density('g/cm3', 8.9)
-
-    # Pure H1 is an illustrative static moderator/shield. Its neutron-capture
-    # product is stable, so this region needs no decay-photon source identity.
-    hydrogen = openmc.Material(name='stationary hydrogen shield')
-    hydrogen.add_nuclide('H1', 1.0)
-    hydrogen.set_density('g/cm3', 0.07)
-
-    xmin = openmc.XPlane(x0=-50.0, boundary_type='vacuum')
-    xmax = openmc.XPlane(x0=70.0, boundary_type='vacuum')
-    ymin = openmc.YPlane(y0=-35.0, boundary_type='vacuum')
-    ymax = openmc.YPlane(y0=35.0, boundary_type='vacuum')
-    zmin = openmc.ZPlane(z0=-20.0, boundary_type='vacuum')
-    zmax = openmc.ZPlane(z0=20.0, boundary_type='vacuum')
-    room = +xmin & -xmax & +ymin & -ymax & +zmin & -zmax
+    nickel, hydrogen, iron = make_materials(
+        ['nickel emitter', 'stationary hydrogen shield',
+         'stationary iron slab'])
+    room = room_region()
     shield_left = openmc.XPlane(x0=SHIELD_X_CM[0])
     shield_right = openmc.XPlane(x0=SHIELD_X_CM[1])
     shield_region = +shield_left & -shield_right
@@ -84,9 +113,6 @@ def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None,
     if iron_slab:
         # Fixed full-length slab along the bottom, 16 cm deep in z. It is
         # activated by scattered neutrons and attenuates downward photons.
-        iron = openmc.Material(name='stationary iron slab')
-        iron.add_element('Fe', 1.0)
-        iron.set_density('g/cm3', 7.87)
         iron_bottom = openmc.YPlane(y0=IRON_Y_CM[0])
         iron_top = openmc.YPlane(y0=IRON_Y_CM[1])
         iron_front = openmc.ZPlane(z0=IRON_Z_CM[0])
@@ -100,6 +126,19 @@ def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None,
     shield = openmc.Cell(fill=hydrogen, region=room & shield_region)
     void = openmc.Cell(region=void_region)
     model = openmc.Model(geometry=openmc.Geometry([*cells, shield, void]))
+    add_settings_and_tallies(model, args, neutron_source_position_cm)
+
+    transforms = {}
+    if emitter_x_cm is not None:
+        placement = np.eye(4)
+        placement[0, 3] = emitter_x_cm
+        transforms['emitter'] = placement
+    return d1s.Configuration(model, components=components,
+                             transforms=transforms)
+
+
+def add_settings_and_tallies(model, args, neutron_source_position_cm=None):
+    """Apply shared run settings, the optional beam, and mesh tallies."""
     model.settings.run_mode = 'fixed source'
     model.settings.batches = args.batches
     model.settings.particles = args.particles
@@ -109,7 +148,7 @@ def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None,
     if neutron_source_position_cm is not None:
         model.settings.source = openmc.IndependentSource(
             space=openmc.stats.Point(neutron_source_position_cm),
-            angle=openmc.stats.Monodirectional((1.0, 0.0, 0.0)),
+            angle=openmc.stats.Monodirectional(NEUTRON_DIRECTION),
             energy=openmc.stats.Discrete([14.1e6], [1.0]),
             particle='neutron')
 
@@ -129,14 +168,6 @@ def configuration_at(emitter_x_cm, args, neutron_source_position_cm=None,
                                 openmc.ParticleFilter('neutron')]
         neutron_flux.scores = ['flux']
         model.tallies.append(neutron_flux)
-
-    transforms = {}
-    if emitter_x_cm is not None:
-        placement = np.eye(4)
-        placement[0, 3] = emitter_x_cm
-        transforms['emitter'] = placement
-    return d1s.Configuration(model, components=components,
-                             transforms=transforms)
 
 
 def mesh_flux(tally, value='mean'):
@@ -282,10 +313,14 @@ def draw_animation(means, filename, positions, neutron_positions, titles,
     neutron_positions = np.asarray(neutron_positions)
     visible_sources = (neutron_positions[:1] if neutron_active
                        else neutron_positions)
-    source_markers = ax.scatter(
-        visible_sources[:, 0], visible_sources[:, 1], marker='x', color='lime',
-        label='neutron source' if neutron_active
-        else 'irradiation source sites (off)')
+    # Arrows start at the source point and show the beam direction.
+    source_markers = ax.quiver(
+        visible_sources[:, 0], visible_sources[:, 1],
+        NEUTRON_DIRECTION[0] * SOURCE_ARROW_CM,
+        NEUTRON_DIRECTION[1] * SOURCE_ARROW_CM, angles='xy',
+        scale_units='xy', scale=1, color='lime', width=0.006,
+        label='neutron beam' if neutron_active
+        else 'irradiation beam sites (off)')
     ax.set_xlabel('x [cm]')
     ax.set_ylabel('y [cm]')
     ax.legend(loc='upper right', fontsize='small')

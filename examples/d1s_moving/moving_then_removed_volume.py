@@ -13,7 +13,8 @@ COOLING_POSITIONS_CM = (24.0, 16.0, 8.0, None)
 REMOVED_SAMPLE_MINUTES = (0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0)
 
 
-def make_simulation(args):
+def make_simulation(args, configuration_at=configuration_at):
+    """Build the schedule. configuration_at may build CSG or CAD models."""
     irradiations = [
         d1s.Irradiation(
             configuration_at(emitter_x_cm=emitter_position, args=args,
