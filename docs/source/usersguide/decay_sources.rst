@@ -564,8 +564,13 @@ Nonunit source sampling-importance weights remain in the birth numerator;
 ``source_weight`` is the sum of actual original source weights for information
 only. Capture rejects sampled non-neutron external sites even when their weight
 is zero. The sum of these physical emission weights, after component removal,
-is the observation's total photon rate :math:`Q_\gamma` in photons/s. Replay
-samples sites in proportion to those weights and launches unit-weight photons.
+is the observation's total photon rate :math:`Q_\gamma` in photons/s. Births
+below the destination model's photon energy cutoff (``Settings.cutoff``
+``'energy_photon'``, default 1 keV) are excluded from replay and from
+:math:`Q_\gamma`, as ordinary secondary creation would discard them. The
+stored production bank keeps them, so a later observation with a lower
+cutoff can still use them. Replay samples sites in proportion to the
+remaining weights and launches unit-weight photons.
 An ordinary source bank's compound layout is retained, with separate parent
 tags and optional sampling weights; see :ref:`io_source_d1s` for filenames,
 normalization, and metadata.

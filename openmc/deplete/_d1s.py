@@ -50,6 +50,8 @@ _UNCERTAINTY = (
     'Standard deviations include photon transport uncertainty conditional on '
     'the sampled neutron birth banks, not neutron bank generation uncertainty.'
 )
+# Backend default photon energy cutoff in eV (settings::energy_cutoff).
+_PHOTON_ENERGY_CUTOFF = 1000.0
 
 
 def _real(name, value, positive=False):
@@ -845,6 +847,9 @@ def _csg_points(model, selector, bank):
         for entity in traversed:
             if isinstance(entity, tuple):
                 lattice, indices = entity
+                # A 2-D HexLattice locator also returns an axial index, but
+                # registered paths use only as many indices as dimensions.
+                indices = indices[:lattice.ndim]
                 path.append(
                     f'l{lattice.id}({",".join(str(x) for x in indices)})')
             elif isinstance(entity, openmc.Cell):
@@ -869,12 +874,17 @@ def _compose(target, model, contributions, filename):
     has_dagmc = any(
         isinstance(u, openmc.DAGMCUniverse)
         for u in model.geometry.get_all_universes().values())
-    for kernel_index, (kernel, factors) in enumerate(contributions):
+    # External source sites are only checked against the energy cutoff at
+    # their first collision, so apply the destination cutoff here, as
+    # ordinary secondary creation would. The photon rate then excludes them.
+    cutoff = (model.settings.cutoff or {}).get(
+        'energy_photon', _PHOTON_ENERGY_CUTOFF)
+    for kernel, factors in contributions:
         physical = (kernel.bank['wgt'] / kernel.source_histories
                     * factors[kernel.parent_nuclide])
         if not np.isfinite(physical).all() or (physical < 0.).any():
             raise ValueError('Nonfinite or negative D1S emission weights')
-        keep = physical > 0.
+        keep = (physical > 0.) & (kernel.bank['E'] >= cutoff)
         bank = kernel.bank.copy()
         target_components = np.full(len(bank), -1, dtype=np.int64)
         if target.components is not None:
@@ -909,6 +919,8 @@ def _compose(target, model, contributions, filename):
                     _csg_points(model, selector, bank[selected & keep])
         if not keep.any():
             continue
+        # Index the returned provenance list, which omits unused kernels.
+        kernel_index = len(used)
         used.append({
             'files': tuple(str(f) for f in kernel.files),
             'source_weight': kernel.source_weight,
@@ -1143,6 +1155,8 @@ def _tallies(model, statepoint, rate, labels, cell_counts=None,
                 tally._sum_third = np.zeros(tally.shape)
                 tally._sum_fourth = np.zeros(tally.shape)
     else:
+        model.geometry.determine_paths()
+        cells = model.geometry.get_all_cells()
         with openmc.StatePoint(statepoint, autolink=False) as sp:
             tallies = []
             for original in sp.tallies.values():
@@ -1159,6 +1173,15 @@ def _tallies(model, statepoint, rate, labels, cell_counts=None,
                     tally._sum_third = original.sum_third * rate**3
                     tally._sum_fourth = original.sum_fourth * rate**4
                 tally._results_read = True
+                for filter_ in tally.filters:
+                    # Without a linked summary, restore CSG paths from the
+                    # target geometry as the zero-source branch does. CAD
+                    # cells are absent from the Python geometry.
+                    if isinstance(filter_, openmc.DistribcellFilter):
+                        cell = cells.get(int(filter_.bins[0]))
+                        if (cell is not None
+                                and len(cell.paths) == filter_.num_bins):
+                            filter_._paths = cell.paths
                 tallies.append(tally)
     for tally in tallies:
         tally.d1s_metadata = dict(

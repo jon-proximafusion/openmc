@@ -165,8 +165,9 @@ their sum is the observation's total photon rate. The workflow also records:
            - **component_names** (*string[]*) -- Target component identities.
            - **target_component** (*int64[]*) -- Per-site zero-based index
              into ``component_names``, or -1 in no-map mode.
-           - **kernel_index** (*int64[]*) -- Per-site index of the contributing
-             production kernel for this observation.
+           - **kernel_index** (*int64[]*) -- Per-site zero-based index into
+             the observation's ``provenance['kernels']``, which lists only
+             the production kernels contributing sites.
 
 The capture arrays ``cell_id``, ``cell_instance``, ``universe_id``,
 ``dagmc_volume_id``, ``history_id``, and ``batch`` are retained as *origin*

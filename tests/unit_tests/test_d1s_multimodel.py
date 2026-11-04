@@ -699,6 +699,133 @@ def test_instance_origin_membership_and_target_membership(unchanged, synthetic,
             production, tmp_path / 'wrong-instance')
 
 
+@pytest.mark.parametrize('cutoff, kept', [
+    (None, [0, 1]), (5.e5, [1]), (2.e6, [])])
+def test_replay_applies_destination_photon_cutoff(make_model, synthetic,
+                                                  tmp_path, cutoff, kept):
+    """Births below the destination cutoff are neither launched nor counted."""
+    model, cell = make_model()
+    target = deepcopy(model)
+    if cutoff is not None:
+        target.settings.cutoff = {'energy_photon': cutoff}
+    origin = d1s.Configuration(model, {'part': d1s.Cells([cell])})
+    destination = d1s.Configuration(
+        target, {'part': d1s.Cells([target.geometry.root_universe.cells[
+            cell.id]])})
+    plans, _ = synthetic
+    plans.append([{'bank': _sites(energies=(2.e5, 1.e6))}])
+    result = _simulation([d1s.Irradiation(origin, 60., 3.),
+                          d1s.Cooling(destination, 1., [0.])]).run(
+        tmp_path / 'cutoff')
+    obs = result.observations['cooling-1', 0.]
+    expected = np.array([2., 7.]) / 10. * [
+        _factor(parent, 60., 3., 0.) for parent in PARENTS]
+    assert obs.source_rate == pytest.approx(expected[kept].sum())
+    if not kept:
+        assert obs.source_bank is None
+        return
+    with h5py.File(obs.source_bank) as handle:
+        np.testing.assert_allclose(handle['source_bank']['E'],
+                                   np.array([2.e5, 1.e6])[kept])
+        np.testing.assert_allclose(handle['sampling_weights'], expected[kept])
+    # The stored production bank keeps every birth for other observations.
+    assert len(result.production.kernels[origin].bank) == 2
+
+
+def test_kernel_index_matches_returned_provenance(make_model, synthetic,
+                                                  tmp_path):
+    first, a = make_model()
+    second, b = make_model()
+    removed = d1s.Configuration(first, {'a': d1s.Cells([a]), 'b': None})
+    kept = d1s.Configuration(second, {'a': None, 'b': d1s.Cells([b])})
+    plans, _ = synthetic
+    plans.extend([[{}], [{}]])
+    result = _simulation([
+        d1s.Irradiation(removed, 60., 1.),
+        d1s.Irradiation(kept, 60., 1.),
+        d1s.Cooling(kept, 1., [0.]),
+    ]).run(tmp_path / 'provenance')
+    obs = result.observations['cooling-1', 0.]
+    kernels = obs.provenance['kernels']
+    assert len(kernels) == 1
+    assert kernels[0]['files'] == tuple(
+        str(f) for f in result.production.kernels[kept].files)
+    with h5py.File(obs.source_bank) as handle:
+        np.testing.assert_array_equal(handle['kernel_index'], [0, 0])
+
+
+def test_nonzero_distribcell_tally_has_paths(unchanged, synthetic, tmp_path):
+    model, leaf = _repeated_model()
+    model.tallies = [openmc.Tally(name='instances')]
+    distribcell = openmc.DistribcellFilter(leaf)
+    # Normally read from a statepoint; the synthetic writer needs it upfront.
+    distribcell._num_bins = 2
+    model.tallies[0].filters = [distribcell]
+    model.tallies[0].scores = ['flux']
+    unchanged(model)
+    config = d1s.Configuration(model, {'part': d1s.Cells([leaf])})
+    plans, _ = synthetic
+    plans.append([{'bank': _sites(((-3., 0., 0.), (3., 0., 0.))),
+                   'cell_id': leaf.id, 'cell_instance': [0, 1]}])
+    result = _simulation([d1s.Irradiation(config, 60., 1.),
+                          d1s.Cooling(config, 1., [0.])]).run(
+        tmp_path / 'distribcell')
+    obs = result.observations['cooling-1', 0.]
+    assert obs.source_rate > 0.
+    tally = obs.tallies[model.tallies[0].id]
+    paths = tally.find_filter(openmc.DistribcellFilter).paths
+    assert len(paths) == 2
+    assert len(tally.get_pandas_dataframe()) == 2
+
+
+def _hex_model():
+    material = openmc.Material()
+    material.add_element('Ni', 1.)
+    material.set_density('g/cm3', 8.9)
+    leaf = openmc.Cell(fill=material)
+    universe = openmc.Universe(cells=[leaf])
+    lattice = openmc.HexLattice()
+    lattice.center = (0., 0.)
+    lattice.pitch = [2.]
+    lattice.universes = [[universe] * 6, [universe]]
+    lattice.outer = openmc.Universe(cells=[openmc.Cell()])
+    boundary = openmc.ZCylinder(r=3., boundary_type='vacuum')
+    root = openmc.Cell(fill=lattice, region=-boundary)
+    model = openmc.Model(geometry=openmc.Geometry([root]),
+                         materials=[material])
+    model.settings.run_mode = 'fixed source'
+    model.settings.batches = 3
+    model.settings.particles = 10
+    model.tallies = [_tally('hex')]
+    model.geometry.determine_paths()
+    centre = next(i for i, path in enumerate(leaf.paths)
+                  if path.endswith(f'l{lattice.id}(0,0)->u{universe.id}'
+                                   f'->c{leaf.id}'))
+    return model, leaf, centre
+
+
+def test_two_dimensional_hex_lattice_instances(unchanged, synthetic,
+                                               tmp_path):
+    model, leaf, centre = _hex_model()
+    unchanged(model)
+    origin = d1s.Configuration(model, {'pin': d1s.Cells([leaf])})
+    plans, _ = synthetic
+    plans.append([{'bank': _sites(((0., 0., 0.), (0., 0., 0.))),
+                   'cell_id': leaf.id, 'cell_instance': centre}])
+    irradiation = d1s.Irradiation(origin, 60., 1.)
+    sim = _simulation([irradiation, d1s.Cooling(
+        d1s.Configuration(model, {'pin': d1s.Cells([leaf], [centre])}),
+        1., [0.])])
+    production = sim.prepare(tmp_path / 'capture')
+    result = sim.evaluate(production, tmp_path / 'centre')
+    assert result.observations['cooling-1', 0.].source_rate > 0.
+    other = (centre + 1) % leaf.num_instances
+    wrong = d1s.Configuration(model, {'pin': d1s.Cells([leaf], [other])})
+    with pytest.raises(ValueError, match='target cell/instance'):
+        _simulation([irradiation, d1s.Cooling(wrong, 1., [0.])]).evaluate(
+            production, tmp_path / 'other')
+
+
 @pytest.mark.parametrize('case', ['unmapped capture', 'outside target',
                                 'transport failure', 'replay failure',
                                 'missing shards'])
@@ -940,8 +1067,10 @@ def test_csg_capture_strength_invariance_and_analytic_rate(csg_transport):
                                        (b, 7200., 31., 0.)):
         factors = np.array([_factor(p, duration, rate, age)
                             for p in kernel.parent_names])
-        expected += np.sum(kernel.bank['wgt'] / kernel.source_weight
-                           * factors[kernel.parent_nuclide])
+        # Births below the default 1 keV photon cutoff are not replayed.
+        replayed = kernel.bank['E'] >= 1.e3
+        expected += np.sum((kernel.bank['wgt'] / kernel.source_weight
+                            * factors[kernel.parent_nuclide])[replayed])
         assert np.all(kernel.bank['particle'] == int(openmc.ParticleType.PHOTON))
         assert np.all(kernel.metadata['dagmc_volume_id'] == 0)
         assert np.all((kernel.metadata['batch'] >= 1)
@@ -1066,12 +1195,14 @@ def test_dagmc_capture_transfer_and_weighted_replay(unchanged, transport_options
     assert np.all(kernel.metadata['cell_id'] != 1)
     obs = result.observations['cooling-1', 0.]
     assert obs.provenance['target_validation'] == 'isolated C API'
+    # Births below the default 1 keV photon cutoff are not replayed.
+    replayed = kernel.bank[kernel.bank['E'] >= 1.e3]
     with h5py.File(obs.source_bank) as handle:
         assert np.ptp(handle['sampling_weights'][()]) > 0.
         np.testing.assert_allclose(_vectors(handle['source_bank'][()], 'r'),
-                                   _vectors(kernel.bank, 'r') + [20., 0., 0.])
+                                   _vectors(replayed, 'r') + [20., 0., 0.])
         np.testing.assert_allclose(_vectors(handle['source_bank'][()], 'u'),
-                                   _vectors(kernel.bank, 'u'))
+                                   _vectors(replayed, 'u'))
     tally = result.get_tally('by parent', 'cooling-1', 0.)
     assert list(tally.find_filter(openmc.ParentNuclideFilter).bins) == list(PARENTS)
     assert np.all(tally.mean > 0.)

@@ -258,6 +258,8 @@ def test_d1s_multimodel(neutron_backend, photon_backend, run_kwargs,
             age = sum(DURATIONS[i + 1:]) + cooling_age
             weights = (kernel.bank['wgt'] / kernel.source_histories * rate
                        * -np.expm1(-lam * duration) * np.exp(-lam * age))
+            # Births below the default 1 keV photon cutoff are not replayed.
+            weights[kernel.bank['E'] < 1.e3] = 0.
             assert weights.sum() > 0.
             expected_weights.append(weights)
             keep = weights > 0.
