@@ -699,6 +699,30 @@ def test_instance_origin_membership_and_target_membership(unchanged, synthetic,
             production, tmp_path / 'wrong-instance')
 
 
+def test_output_schedule_keeps_sourcepoint_compatible(make_model, synthetic,
+                                                    tmp_path):
+    """A valid multi-batch statepoint/sourcepoint pair stays valid."""
+    model, cell = make_model()
+    model = deepcopy(model)
+    model.settings.statepoint = {'batches': [1, 3]}
+    model.settings.sourcepoint = {'batches': [1, 3], 'separate': False}
+    caller = deepcopy(model.settings.sourcepoint)
+    config = d1s.Configuration(model, {'part': d1s.Cells([
+        model.geometry.root_universe.cells[cell.id]])})
+    plans, calls = synthetic
+    _simulation([d1s.Irradiation(config, 60., 1.),
+                 d1s.Cooling(config, 1., [0.])]).run(tmp_path / 'outputs')
+    assert len(calls) == 2
+    for _, _, run_model, _ in calls:
+        settings = run_model.settings
+        assert settings.statepoint == {'batches': [3]}
+        assert settings.sourcepoint == {'separate': False}
+        root = settings.to_xml_element()
+        assert root.find('source_point/batches') is None
+        assert root.find('source_point/separate').text == 'false'
+    assert model.settings.sourcepoint == caller
+
+
 @pytest.mark.parametrize('cutoff, kept', [
     (None, [0, 1]), (5.e5, [1]), (2.e6, [])])
 def test_replay_applies_destination_photon_cutoff(make_model, synthetic,

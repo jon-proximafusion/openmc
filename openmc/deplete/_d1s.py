@@ -559,6 +559,11 @@ def _transport(model, directory, options, chain_file, capture):
     model.settings.run_mode = 'fixed source'
     model.settings.energy_mode = 'continuous-energy'
     model.settings.statepoint = {'batches': [model.settings.batches]}
+    # Sourcepoint batches must be a subset of statepoint batches unless
+    # written separately. Without batches, the backend follows the statepoint.
+    sourcepoint = dict(model.settings.sourcepoint)
+    sourcepoint.pop('batches', None)
+    model.settings.sourcepoint = sourcepoint
     with ExitStack() as stack:
         if chain_file is not None:
             stack.enter_context(openmc.config.patch('chain_file', chain_file))
