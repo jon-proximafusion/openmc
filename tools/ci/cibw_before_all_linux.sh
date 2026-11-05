@@ -137,7 +137,7 @@ cd /tmp && rm -rf Catch2
 # ---------------------------------------------------------------------------
 # Embree
 # ---------------------------------------------------------------------------
-git clone --depth 1 -b v4.3.3 https://github.com/embree/embree.git
+git clone --depth 1 -b v4.0.0 https://github.com/embree/embree.git
 cd embree && mkdir build && cd build
 # Embree compiles every ISA variant (SSE2..AVX-512) into one library and selects
 # the fastest one supported by the host CPU at runtime, so the AVX-512 ray-tracing
@@ -151,6 +151,27 @@ cmake .. \
     -DEMBREE_ISA_AVX512=ON
 make -j"$NPROC" && make install
 cd /tmp && rm -rf embree
+
+# ---------------------------------------------------------------------------
+# XDG
+# ---------------------------------------------------------------------------
+git clone --recurse-submodules https://github.com/xdg-org/xdg.git
+cd xdg
+git checkout 12f56f1181346062d1b8e9f5688f578fc5939540
+mkdir build && cd build
+cmake .. \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_PREFIX_PATH=/usr \
+    -DMOAB_DIR=/usr \
+    -DXDG_ENABLE_MOAB=ON \
+    -DXDG_ENABLE_LIBMESH=OFF \
+    -DXDG_ENABLE_EMBREE=ON \
+    -DXDG_LINK_MPI=OFF \
+    -DXDG_BUILD_TESTS=OFF \
+    -DXDG_BUILD_TOOLS=OFF \
+    -DXDG_BUILD_EXAMPLES=OFF
+make -j"$NPROC" && make install
+cd /tmp && rm -rf xdg
 
 # ---------------------------------------------------------------------------
 # Double-Down

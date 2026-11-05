@@ -95,7 +95,7 @@ skip = ["*-musllinux*"]
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "manylinux_2_28"
 before-all = "bash {project}/tools/ci/cibw_before_all_linux.sh"
-environment = { SKBUILD_CMAKE_ARGS="-DOPENMC_USE_DAGMC=ON;-DOPENMC_USE_OPENMP=ON;-DOPENMC_USE_MPI=OFF;-DOPENMC_USE_UWUW=OFF;-DOPENMC_USE_LIBMESH=OFF" }
+environment = { CMAKE_BUILD_PARALLEL_LEVEL="8", SKBUILD_CMAKE_ARGS="-DOPENMC_USE_DAGMC=ON;-DOPENMC_USE_XDG=ON;-DOPENMC_USE_OPENMP=ON;-DOPENMC_USE_MPI=OFF;-DOPENMC_USE_UWUW=OFF;-DOPENMC_USE_LIBMESH=OFF;-DOPENMC_BUILD_TESTS=OFF" }
 repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
 test-command = "openmc --version && python -c \"import openmc; import openmc.lib\""
 
