@@ -361,6 +361,7 @@ list(APPEND libopenmc_SOURCES
   src/cmfd_solver.cpp
   src/collision_track.cpp
   src/cross_sections.cpp
+  src/d1s.cpp
   src/dagmc.cpp
   src/distribution.cpp
   src/distribution_angle.cpp
