@@ -3,7 +3,7 @@ requires = ["scikit-build-core", "setuptools_scm"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "openmc-with-hard-to-merge-extras"
+name = "openmc"
 authors = [
     {name = "The OpenMC Development Team", email = "openmc@anl.gov"},
 ]

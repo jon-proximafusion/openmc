@@ -45,7 +45,7 @@ from openmc.model import Model, SearchResult
 from . import examples
 
 
-__version__ = importlib.metadata.version("openmc-with-hard-to-merge-extras")
+__version__ = importlib.metadata.version("openmc")
 
 try:
     OPENMC_CORE_BASE_PATH = os.path.join(__path__[0], "core")
